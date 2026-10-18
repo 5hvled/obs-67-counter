@@ -33,6 +33,8 @@ struct SixtySevenFilter {
     int candidate_frames = 0;
     uint64_t last_count_ns = 0;
     std::string text_source_name;
+    std::string text_prefix;
+    std::string text_postfix;
 
     obs_hotkey_id hotkey_reset = OBS_INVALID_HOTKEY_ID;
     obs_hotkey_id hotkey_plus = OBS_INVALID_HOTKEY_ID;
