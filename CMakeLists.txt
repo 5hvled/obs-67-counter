@@ -10,6 +10,8 @@ add_library(obs-67-counter MODULE
   src/plugin-main.cpp
   src/sixty-seven-filter.cpp
   src/sixty-seven-filter.hpp
+  src/hand-detector.cpp
+  src/hand-detector.hpp
 )
 
 target_link_libraries(obs-67-counter PRIVATE OBS::libobs)
