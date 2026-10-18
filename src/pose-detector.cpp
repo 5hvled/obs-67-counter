@@ -70,7 +70,7 @@ public:
         if (!get_api_base) {
             blog(LOG_ERROR,
                  "[obs-67-counter] MoveNet: OrtGetApiBase export not found");
-            shutdown();
+            cleanup(false);
             return false;
         }
 
@@ -80,7 +80,7 @@ public:
             blog(LOG_ERROR,
                  "[obs-67-counter] MoveNet: ONNX Runtime API v%d unavailable",
                  ORT_API_VERSION);
-            shutdown();
+            cleanup(false);
             return false;
         }
 
@@ -90,7 +90,7 @@ public:
         if (!model_path) {
             blog(LOG_ERROR,
                  "[obs-67-counter] MoveNet: model file was not found");
-            shutdown();
+            cleanup(false);
             return false;
         }
 
@@ -112,7 +112,8 @@ public:
                 blog(LOG_ERROR,
                      "[obs-67-counter] MoveNet: model path conversion failed");
                 bfree(model_path);
-                shutdown();
+                model_path = nullptr;
+                cleanup(false);
                 return false;
             }
 
@@ -124,6 +125,7 @@ public:
                 *env_, model_path, options);
 #endif
             bfree(model_path);
+            model_path = nullptr;
 
             Ort::AllocatorWithDefaultOptions allocator;
             auto input_name =
@@ -142,7 +144,7 @@ public:
                 input_shape[3] != 3) {
                 blog(LOG_ERROR,
                      "[obs-67-counter] MoveNet: unexpected input shape");
-                shutdown();
+                cleanup(false);
                 return false;
             }
 
@@ -156,7 +158,7 @@ public:
             if (input_width_ <= 0 || input_height_ <= 0) {
                 blog(LOG_ERROR,
                      "[obs-67-counter] MoveNet: invalid model dimensions");
-                shutdown();
+                cleanup(false);
                 return false;
             }
 
@@ -175,14 +177,16 @@ public:
             blog(LOG_ERROR,
                  "[obs-67-counter] MoveNet initialization failed: %s",
                  e.what());
-            bfree(model_path);
-            shutdown();
+            if (model_path)
+                bfree(model_path);
+            cleanup(false);
             return false;
         } catch (...) {
             blog(LOG_ERROR,
                  "[obs-67-counter] MoveNet initialization failed");
-            bfree(model_path);
-            shutdown();
+            if (model_path)
+                bfree(model_path);
+            cleanup(false);
             return false;
         }
     }
@@ -312,6 +316,12 @@ public:
 
     void shutdown()
     {
+        cleanup(true);
+    }
+
+private:
+    void cleanup(bool allow_retry)
+    {
         session_.reset();
         env_.reset();
 
@@ -325,10 +335,10 @@ public:
         input_i32_.clear();
         input_u8_.clear();
         input_f32_.clear();
-        load_attempted_ = false;
+        unsupported_type_logged_ = false;
+        load_attempted_ = !allow_retry;
     }
 
-private:
     void preprocess(const uint8_t *bgra, uint32_t width,
                     uint32_t height, uint32_t stride,
                     int &resized_w, int &resized_h,
