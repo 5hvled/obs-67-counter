@@ -1,5 +1,6 @@
 #pragma once
 #include <obs-module.h>
+#include <graphics/graphics.h>
 #include <cstdint>
 #include <mutex>
 
@@ -32,5 +33,16 @@ struct SixtySevenFilter {
     uint64_t count = 0;
 
     HandPoint a, b;
+
+    // Effect-filter sampling path. We render a tiny SDR copy of the target
+    // only on sample frames, then use two staging surfaces as a ping-pong
+    // GPU->CPU readback so normal rendering stays pass-through.
+    gs_texrender_t *sample_render = nullptr;
+    gs_stagesurf_t *stage[2] = {nullptr, nullptr};
+    bool stage_pending[2] = {false, false};
+    int stage_write = 0;
+    uint32_t sample_width = 0;
+    uint32_t sample_height = 0;
+
     std::mutex mutex;
 };
