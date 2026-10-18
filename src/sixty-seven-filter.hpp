@@ -10,6 +10,7 @@ struct HandPoint {
     float x = 0.0f;
     float y = 0.0f;
     float area = 0.0f;
+    float confidence = 0.0f;
     bool valid = false;
 };
 
@@ -26,6 +27,7 @@ struct SixtySevenFilter {
     bool show_tracking_markers = true;
     float dead_zone = 0.08f;
     float min_blob_fraction = 0.0035f;
+    float pose_confidence = 0.20f;
     int stable_frames_required = 4;
     uint64_t cooldown_ns = 250000000ULL;
 
@@ -51,6 +53,12 @@ struct SixtySevenFilter {
     obs_hotkey_id hotkey_start_challenge = OBS_INVALID_HOTKEY_ID;
 
     HandPoint a, b;
+    HandPoint left_shoulder;
+    HandPoint left_elbow;
+    HandPoint left_wrist;
+    HandPoint right_shoulder;
+    HandPoint right_elbow;
+    HandPoint right_wrist;
 
     // Effect-filter sampling path. We render a tiny SDR copy of the target
     // only on sample frames, then use two staging surfaces as a ping-pong
