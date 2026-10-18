@@ -22,6 +22,25 @@ jobs:
       - name: Build libobs
         shell: pwsh
         run: cmake --build obs-build --config Release --target libobs
+      - name: Download ONNX Runtime
+        shell: pwsh
+        run: |
+          $version = "1.23.2"
+          $url = "https://github.com/microsoft/onnxruntime/releases/download/v$version/onnxruntime-win-x64-$version.zip"
+          curl.exe -L --fail --retry 3 --retry-delay 2 -o onnxruntime.zip $url
+          Expand-Archive -Path onnxruntime.zip -DestinationPath onnxruntime
+          $ortRoot = (Get-ChildItem onnxruntime -Directory | Select-Object -First 1).FullName
+          if (-not (Test-Path "$ortRoot/include/onnxruntime_cxx_api.h")) { throw "ONNX Runtime headers were not found" }
+          if (-not (Test-Path "$ortRoot/lib/onnxruntime.dll")) { throw "ONNX Runtime DLL was not found" }
+          "ORT_ROOT=$ortRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Download MoveNet SinglePose Lightning
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force third_party | Out-Null
+          $url = "https://huggingface.co/Xenova/movenet-singlepose-lightning/resolve/main/onnx/model.onnx?download=true"
+          curl.exe -L --fail --retry 3 --retry-delay 2 -o third_party/movenet_singlepose_lightning.onnx $url
+          $model = Get-Item third_party/movenet_singlepose_lightning.onnx
+          if ($model.Length -lt 5000000) { throw "MoveNet model download looks incomplete: $($model.Length) bytes" }
       - name: Configure plugin
         shell: pwsh
         run: |
@@ -31,20 +50,29 @@ jobs:
             Select-Object -First 1
           if (-not $depsDir) { throw "OBS dependency bundle was not found" }
           $deps = $depsDir.FullName -replace '\\','/'
+          $ort = $env:ORT_ROOT -replace '\\','/'
           Write-Host "Using OBS dependencies: $deps"
+          Write-Host "Using ONNX Runtime: $ort"
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
             "-Dlibobs_DIR=$root/obs-build/libobs" `
             "-DCMAKE_PREFIX_PATH=$deps;$root/obs-build;$root/obs-build/deps;$root/obs-build/libobs" `
-            "-DCMAKE_MODULE_PATH=$root/obs-studio/cmake/finders"
+            "-DCMAKE_MODULE_PATH=$root/obs-studio/cmake/finders" `
+            "-DONNXRUNTIME_ROOT=$ort"
       - name: Build plugin
         shell: pwsh
         run: cmake --build build --config Release
       - name: Stage
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/obs-plugins/64bit
+          New-Item -ItemType Directory -Force dist/obs-plugins/64bit | Out-Null
+          New-Item -ItemType Directory -Force dist/data/obs-plugins/obs-67-counter | Out-Null
           Copy-Item build/Release/obs-67-counter.dll dist/obs-plugins/64bit/
+          Copy-Item "$env:ORT_ROOT/lib/onnxruntime.dll" dist/data/obs-plugins/obs-67-counter/
+          if (Test-Path "$env:ORT_ROOT/lib/onnxruntime_providers_shared.dll") {
+            Copy-Item "$env:ORT_ROOT/lib/onnxruntime_providers_shared.dll" dist/data/obs-plugins/obs-67-counter/
+          }
+          Copy-Item third_party/movenet_singlepose_lightning.onnx dist/data/obs-plugins/obs-67-counter/
       - uses: actions/upload-artifact@v4
         with:
-          name: obs-67-counter-windows-x64-test
+          name: obs-67-counter-windows-x64-pose-test
           path: dist/
