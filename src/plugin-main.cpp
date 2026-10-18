@@ -1,5 +1,4 @@
 #include <obs-module.h>
-#include "counter-display.hpp"
 
 OBS_DECLARE_MODULE()
 
@@ -14,7 +13,6 @@ bool obs_module_load(void)
 
     // Optional raw async variant retained for direct camera-frame testing.
     obs_register_source(&sixty_seven_raw_filter_info);
-    obs_register_source(&sixty_seven_display_info);
 
     blog(LOG_INFO, "[obs-67-counter] loaded");
     return true;
