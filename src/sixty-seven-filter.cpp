@@ -1,4 +1,5 @@
 #include "sixty-seven-filter.hpp"
+#include "hand-detector.hpp"
 #include <graphics/graphics.h>
 #include <algorithm>
 #include <cmath>
@@ -66,10 +67,10 @@ static obs_properties_t *properties(void *)
  * Returning false means "no confident pair" and therefore can never increment
  * the counter. This fail-closed behavior prevents false counts in this scaffold.
  */
-static bool detect_hands(const uint8_t *, uint32_t, uint32_t, uint32_t,
-                         float, HandPoint &, HandPoint &)
+static bool detect_hands(const uint8_t *data, uint32_t w, uint32_t h, uint32_t stride,
+                         float min_blob, HandPoint &a, HandPoint &b)
 {
-    return false;
+    return detect_hand_pair_bgra(data, w, h, stride, min_blob, a, b);
 }
 
 static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoint &b)
