@@ -1,8 +1,5 @@
 #include "sixty-seven-filter.hpp"
 #include "hand-detector.hpp"
-#include <graphics/graphics.h>
-#include <algorithm>
-#include <cmath>
 
 static const char *filter_name(void *) { return "67 Counter"; }
 
@@ -32,53 +29,35 @@ static void *create(obs_data_t *s, obs_source_t *source)
 {
     auto *f = new SixtySevenFilter;
     f->context = source;
-    f->render = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
     update(f, s);
     return f;
 }
 
 static void destroy(void *data)
 {
-    auto *f = static_cast<SixtySevenFilter *>(data);
-    if (f->stage) gs_stagesurface_destroy(f->stage);
-    if (f->render) gs_texrender_destroy(f->render);
-    delete f;
+    delete static_cast<SixtySevenFilter *>(data);
 }
 
 static obs_properties_t *properties(void *)
 {
     obs_properties_t *p = obs_properties_create();
     obs_properties_add_bool(p, "enabled", "Enable detection");
-    obs_properties_add_bool(p, "debug", "Debug overlay");
+    obs_properties_add_bool(p, "debug", "Debug logging");
     obs_properties_add_float_slider(p, "dead_zone", "Vertical dead zone", 0.02, 0.30, 0.01);
     obs_properties_add_float_slider(p, "min_blob", "Minimum hand region", 0.001, 0.03, 0.0005);
-    obs_properties_add_int_slider(p, "stable_frames", "Stable frames", 1, 15, 1);
+    obs_properties_add_int_slider(p, "stable_frames", "Stable samples", 1, 15, 1);
     obs_properties_add_int_slider(p, "cooldown_ms", "Cooldown (ms)", 0, 1500, 25);
     return p;
-}
-
-/*
- * V1 calibration detector.
- *
- * We intentionally keep the OBS capture/state-machine plumbing separate from
- * the detector. detect_hands() will be replaced by the landmark backend after
- * validating camera orientation and performance on the target setup.
- *
- * Returning false means "no confident pair" and therefore can never increment
- * the counter. This fail-closed behavior prevents false counts in this scaffold.
- */
-static bool detect_hands(const uint8_t *data, uint32_t w, uint32_t h, uint32_t stride,
-                         float min_blob, HandPoint &a, HandPoint &b)
-{
-    return detect_hand_pair_bgra(data, w, h, stride, min_blob, a, b);
 }
 
 static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoint &b)
 {
     const float dy = a.y - b.y;
     VerticalState observed = VerticalState::Unknown;
-    if (dy < -f->dead_zone) observed = VerticalState::FirstAbove;
-    else if (dy > f->dead_zone) observed = VerticalState::SecondAbove;
+    if (dy < -f->dead_zone)
+        observed = VerticalState::FirstAbove;
+    else if (dy > f->dead_zone)
+        observed = VerticalState::SecondAbove;
 
     if (observed == VerticalState::Unknown) {
         f->candidate = VerticalState::Unknown;
@@ -92,8 +71,11 @@ static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoin
         return;
     }
 
-    if (++f->candidate_frames < f->stable_frames_required) return;
-    if (observed == f->committed) return;
+    ++f->candidate_frames;
+    if (f->candidate_frames < f->stable_frames_required)
+        return;
+    if (observed == f->committed)
+        return;
 
     const uint64_t now = os_gettime_ns();
     if (f->committed != VerticalState::Unknown &&
@@ -103,36 +85,77 @@ static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoin
         blog(LOG_INFO, "[obs-67-counter] 67! count=%llu",
              (unsigned long long)f->count);
     }
+
     f->committed = observed;
 }
 
-static void video_render(void *data, gs_effect_t *)
+static obs_source_frame *filter_video(void *data, obs_source_frame *frame)
 {
     auto *f = static_cast<SixtySevenFilter *>(data);
-    obs_source_t *target = obs_filter_get_target(f->context);
-    if (!target) return;
+    if (!frame)
+        return frame;
 
-    const uint32_t w = obs_source_get_base_width(target);
-    const uint32_t h = obs_source_get_base_height(target);
-    if (!w || !h) return;
+    bool enabled;
+    bool debug;
+    float min_blob;
+    uint64_t sample_index;
 
-    /*
-     * Pass-through is deliberate in this first commit. The next detector commit
-     * stages a downscaled frame for CPU inference; inference must never block
-     * OBS's render path.
-     */
-    obs_source_skip_video_filter(f->context);
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        enabled = f->enabled;
+        debug = f->debug;
+        min_blob = f->min_blob_fraction;
+        sample_index = ++f->frame_index;
+    }
+
+    if (!enabled || (sample_index % 3) != 0)
+        return frame;
+
+    HandPoint a, b;
+    const bool found = detect_hand_pair_frame(frame, min_blob, a, b);
+
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+
+        if (!found) {
+            ++f->missing_frames;
+            f->candidate = VerticalState::Unknown;
+            f->candidate_frames = 0;
+            if (f->missing_frames >= 10)
+                f->committed = VerticalState::Unknown;
+            return frame;
+        }
+
+        f->missing_frames = 0;
+        f->a = a;
+        f->b = b;
+        consume_pair(f, a, b);
+
+        if (debug && (sample_index % 90) == 0) {
+            blog(LOG_DEBUG,
+                 "[obs-67-counter] format=%s A=(%.3f,%.3f) B=(%.3f,%.3f) count=%llu",
+                 get_video_format_name(frame->format), a.x, a.y, b.x, b.y,
+                 (unsigned long long)f->count);
+        }
+    }
+
+    return frame;
 }
 
-obs_source_info sixty_seven_filter_info = {
-    .id = "sixty_seven_counter_filter",
-    .type = OBS_SOURCE_TYPE_FILTER,
-    .output_flags = OBS_SOURCE_VIDEO,
-    .get_name = filter_name,
-    .create = create,
-    .destroy = destroy,
-    .get_defaults = defaults,
-    .get_properties = properties,
-    .update = update,
-    .video_render = video_render,
-};
+static obs_source_info make_filter_info()
+{
+    obs_source_info info = {};
+    info.id = "sixty_seven_counter_filter";
+    info.type = OBS_SOURCE_TYPE_FILTER;
+    info.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_ASYNC;
+    info.get_name = filter_name;
+    info.create = create;
+    info.destroy = destroy;
+    info.get_defaults = defaults;
+    info.get_properties = properties;
+    info.update = update;
+    info.filter_video = filter_video;
+    return info;
+}
+
+obs_source_info sixty_seven_filter_info = make_filter_info();
