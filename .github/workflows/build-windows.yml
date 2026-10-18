@@ -24,7 +24,7 @@ jobs:
         run: cmake --build obs-build --config Release --target libobs
       - name: Configure plugin
         shell: pwsh
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -Dlibobs_DIR="$env:GITHUB_WORKSPACE/obs-build/libobs" -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/obs-build;$env:GITHUB_WORKSPACE/obs-build/deps;$env:GITHUB_WORKSPACE/obs-build/libobs"
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -Dlibobs_DIR="$env:GITHUB_WORKSPACE/obs-build/libobs" -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE/obs-build;$env:GITHUB_WORKSPACE/obs-build/deps;$env:GITHUB_WORKSPACE/obs-build/libobs" -DCMAKE_MODULE_PATH="$env:GITHUB_WORKSPACE/obs-studio/cmake/finders"
       - name: Build plugin
         shell: pwsh
         run: cmake --build build --config Release
