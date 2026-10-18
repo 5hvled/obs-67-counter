@@ -5,6 +5,7 @@
 #include <util/platform.h>
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
