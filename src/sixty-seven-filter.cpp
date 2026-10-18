@@ -1,5 +1,6 @@
 #include "sixty-seven-filter.hpp"
 #include "hand-detector.hpp"
+#include "pose-detector.hpp"
 #include "counter-state.hpp"
 #include <util/platform.h>
 #include <algorithm>
@@ -18,6 +19,7 @@ static void defaults(obs_data_t *s)
     obs_data_set_default_bool(s, "show_tracking_markers", true);
     obs_data_set_default_double(s, "dead_zone", 0.08);
     obs_data_set_default_double(s, "min_blob", 0.0035);
+    obs_data_set_default_double(s, "pose_confidence", 0.20);
     obs_data_set_default_int(s, "stable_frames", 4);
     obs_data_set_default_int(s, "cooldown_ms", 250);
     obs_data_set_default_int(s, "count", 0);
@@ -199,6 +201,7 @@ static void update(void *data, obs_data_t *s)
         f->show_tracking_markers = obs_data_get_bool(s, "show_tracking_markers");
         f->dead_zone = (float)obs_data_get_double(s, "dead_zone");
         f->min_blob_fraction = (float)obs_data_get_double(s, "min_blob");
+        f->pose_confidence = (float)obs_data_get_double(s, "pose_confidence");
         f->stable_frames_required = (int)obs_data_get_int(s, "stable_frames");
         f->cooldown_ns = (uint64_t)obs_data_get_int(s, "cooldown_ms") * 1000000ULL;
         f->text_source_name = obs_data_get_string(s, "text_source");
@@ -402,8 +405,13 @@ static obs_properties_t *properties(void *data)
     obs_properties_add_bool(p, "debug", "Debug logging");
     obs_properties_add_bool(p, "show_tracking_markers",
                             "Show green hand tracking markers");
+    obs_properties_add_float_slider(p, "pose_confidence",
+                                    "Pose landmark confidence",
+                                    0.05, 0.90, 0.05);
     obs_properties_add_float_slider(p, "dead_zone", "Vertical dead zone", 0.02, 0.30, 0.01);
-    obs_properties_add_float_slider(p, "min_blob", "Minimum hand region", 0.001, 0.03, 0.0005);
+    obs_properties_add_float_slider(p, "min_blob",
+                                    "Raw Camera only: minimum skin region",
+                                    0.001, 0.03, 0.0005);
     obs_properties_add_int_slider(p, "stable_frames", "Stable samples", 1, 15, 1);
     obs_properties_add_int_slider(p, "cooldown_ms", "Cooldown (ms)", 0, 1500, 25);
     return p;
@@ -421,6 +429,12 @@ static void reset_detection_after_loss(SixtySevenFilter *f)
     f->candidate_frames = 0;
     f->a.valid = false;
     f->b.valid = false;
+    f->left_shoulder = {};
+    f->left_elbow = {};
+    f->left_wrist = {};
+    f->right_shoulder = {};
+    f->right_elbow = {};
+    f->right_wrist = {};
     if (f->missing_frames >= 10)
         f->committed = VerticalState::Unknown;
 }
@@ -493,6 +507,57 @@ static void accept_detection(SixtySevenFilter *f, bool found,
             blog(LOG_DEBUG,
                  "[obs-67-counter] %s A=(%.3f,%.3f) B=(%.3f,%.3f) count=%llu",
                  path_name, a.x, a.y, b.x, b.y,
+                 (unsigned long long)counter_get());
+        }
+    }
+
+    if (changed_count != UINT64_MAX) {
+        sync_text_source(f, changed_count);
+        count_temporary_challenge(f);
+    }
+}
+
+static void accept_pose_detection(SixtySevenFilter *f, bool found,
+                                  const PoseArmLandmarks &pose,
+                                  bool debug, uint64_t sample_index)
+{
+    uint64_t changed_count = UINT64_MAX;
+
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+
+        if (!found) {
+            reset_detection_after_loss(f);
+            return;
+        }
+
+        f->missing_frames = 0;
+        f->left_shoulder = pose.left_shoulder;
+        f->left_elbow = pose.left_elbow;
+        f->left_wrist = pose.left_wrist;
+        f->right_shoulder = pose.right_shoulder;
+        f->right_elbow = pose.right_elbow;
+        f->right_wrist = pose.right_wrist;
+
+        // The 67 state machine compares anatomically identified wrists.
+        // MoveNet keeps left/right identity stable even when the arms cross.
+        f->a = pose.left_wrist;
+        f->b = pose.right_wrist;
+        changed_count = consume_pair(f, f->a, f->b);
+
+        if (debug && (sample_index % 90) == 0) {
+            blog(LOG_DEBUG,
+                 "[obs-67-counter] pose "
+                 "LW=(%.3f,%.3f %.2f) LE=(%.3f,%.3f %.2f) "
+                 "RW=(%.3f,%.3f %.2f) RE=(%.3f,%.3f %.2f) count=%llu",
+                 pose.left_wrist.x, pose.left_wrist.y,
+                 pose.left_wrist.confidence,
+                 pose.left_elbow.x, pose.left_elbow.y,
+                 pose.left_elbow.confidence,
+                 pose.right_wrist.x, pose.right_wrist.y,
+                 pose.right_wrist.confidence,
+                 pose.right_elbow.x, pose.right_elbow.y,
+                 pose.right_elbow.confidence,
                  (unsigned long long)counter_get());
         }
     }
@@ -618,7 +683,7 @@ static bool render_target_to_sample(SixtySevenFilter *f,
 }
 
 static void process_previous_stage(SixtySevenFilter *f, int index,
-                                   float min_blob, bool debug,
+                                   float pose_confidence, bool debug,
                                    uint64_t sample_index)
 {
     if (!f->stage_pending[index] || !f->stage[index])
@@ -628,13 +693,13 @@ static void process_previous_stage(SixtySevenFilter *f, int index,
     uint32_t linesize = 0;
 
     if (gs_stagesurface_map(f->stage[index], &data, &linesize)) {
-        HandPoint a, b;
-        const bool found = detect_hand_pair_bgra(
+        PoseArmLandmarks pose;
+        const bool found = detect_pose_bgra(
             data, f->sample_width, f->sample_height, linesize,
-            min_blob, a, b);
+            pose_confidence, pose);
         gs_stagesurface_unmap(f->stage[index]);
 
-        accept_detection(f, found, a, b, debug, sample_index, "effect");
+        accept_pose_detection(f, found, pose, debug, sample_index);
     }
 
     f->stage_pending[index] = false;
@@ -645,12 +710,12 @@ static bool ensure_debug_marker_texture(SixtySevenFilter *f)
     if (f->debug_marker_texture)
         return true;
 
-    const uint32_t size = 40;
+    const uint32_t size = 22;
     std::vector<uint8_t> pixels((size_t)size * size * 4, 0);
     const float center = (float)(size - 1) * 0.5f;
-    const float outer2 = 18.0f * 18.0f;
-    const float inner2 = 13.0f * 13.0f;
-    const float dot2 = 3.0f * 3.0f;
+    const float outer2 = 9.0f * 9.0f;
+    const float inner2 = 6.5f * 6.5f;
+    const float dot2 = 2.5f * 2.5f;
 
     for (uint32_t y = 0; y < size; ++y) {
         for (uint32_t x = 0; x < size; ++x) {
@@ -673,24 +738,77 @@ static bool ensure_debug_marker_texture(SixtySevenFilter *f)
     return f->debug_marker_texture != nullptr;
 }
 
+static void draw_forearm_line(const HandPoint &from,
+                              const HandPoint &to,
+                              uint32_t width, uint32_t height)
+{
+    if (!from.valid || !to.valid)
+        return;
+
+    const float x1 = from.x * (float)width;
+    const float y1 = from.y * (float)height;
+    const float x2 = to.x * (float)width;
+    const float y2 = to.y * (float)height;
+
+    const float dx = x2 - x1;
+    const float dy = y2 - y1;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0f)
+        return;
+
+    const float nx = -dy / len;
+    const float ny = dx / len;
+
+    gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+    vec4 green;
+    vec4_set(&green, 0.0f, 1.0f, 0.0f, 1.0f);
+    gs_effect_set_vec4(
+        gs_effect_get_param_by_name(solid, "color"), &green);
+
+    while (gs_effect_loop(solid, "Solid")) {
+        // Draw five parallel 1px lines so the forearm link is easy to see.
+        for (int offset = -2; offset <= 2; ++offset) {
+            const float ox = nx * (float)offset;
+            const float oy = ny * (float)offset;
+            gs_render_start(true);
+            gs_vertex2f(x1 + ox, y1 + oy);
+            gs_vertex2f(x2 + ox, y2 + oy);
+            gs_render_stop(GS_LINES);
+        }
+    }
+}
+
 static void draw_tracking_markers(SixtySevenFilter *f,
                                   uint32_t width, uint32_t height)
 {
     bool show;
-    HandPoint a;
-    HandPoint b;
+    HandPoint left_elbow;
+    HandPoint left_wrist;
+    HandPoint right_elbow;
+    HandPoint right_wrist;
     {
         std::lock_guard<std::mutex> lock(f->mutex);
         show = f->show_tracking_markers;
-        a = f->a;
-        b = f->b;
+        left_elbow = f->left_elbow;
+        left_wrist = f->left_wrist;
+        right_elbow = f->right_elbow;
+        right_wrist = f->right_wrist;
     }
 
-    if (!show || (!a.valid && !b.valid) ||
-        !ensure_debug_marker_texture(f))
+    if (!show)
         return;
 
-    const float marker_size = 40.0f;
+    const bool any =
+        left_elbow.valid || left_wrist.valid ||
+        right_elbow.valid || right_wrist.valid;
+    if (!any || !ensure_debug_marker_texture(f))
+        return;
+
+    // Forearm skeleton first, landmark dots on top.
+    draw_forearm_line(left_elbow, left_wrist, width, height);
+    draw_forearm_line(right_elbow, right_wrist, width, height);
+
+    const float marker_size = 22.0f;
     gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
     gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
     gs_effect_set_texture(image, f->debug_marker_texture);
@@ -714,8 +832,11 @@ static void draw_tracking_markers(SixtySevenFilter *f,
         gs_matrix_pop();
     };
 
-    draw_one(a);
-    draw_one(b);
+    draw_one(left_elbow);
+    draw_one(left_wrist);
+    draw_one(right_elbow);
+    draw_one(right_wrist);
+
     gs_blend_state_pop();
 }
 
@@ -734,18 +855,19 @@ static void effect_render(void *data, gs_effect_t *)
 
     bool enabled;
     bool debug;
-    float min_blob;
+    float pose_confidence;
     uint64_t sample_index;
 
     {
         std::lock_guard<std::mutex> lock(f->mutex);
         enabled = f->enabled;
         debug = f->debug;
-        min_blob = f->min_blob_fraction;
+        pose_confidence = f->pose_confidence;
         sample_index = ++f->frame_index;
     }
 
-    // Always remain visually pass-through. Sampling only happens ~20 times/s
+    // Always remain visually pass-through. MoveNet runs on the small
+    // staged sample rather than the full-resolution source.
     // at 60 FPS and at <=320 px on the long edge.
     if (enabled && (sample_index % 3) == 0) {
         const uint32_t width = obs_source_get_base_width(target);
@@ -757,7 +879,7 @@ static void effect_render(void *data, gs_effect_t *)
 
             if (ensure_effect_resources(f, sample_w, sample_h)) {
                 const int read_index = 1 - f->stage_write;
-                process_previous_stage(f, read_index, min_blob, debug, sample_index);
+                process_previous_stage(f, read_index, pose_confidence, debug, sample_index);
 
                 if (render_target_to_sample(f, target, parent,
                                             width, height,
