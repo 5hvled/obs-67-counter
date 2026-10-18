@@ -1,8 +1,11 @@
 #pragma once
 #include "sixty-seven-filter.hpp"
 
-// Lightweight V1 detector. It samples the raw asynchronous OBS camera frame
-// directly (RGB or common 8-bit YUV formats), builds a low-resolution skin
-// mask, and returns two separated hand-region candidates.
+// Raw asynchronous OBS frame detector.
 bool detect_hand_pair_frame(const obs_source_frame *frame, float min_blob_fraction,
                             HandPoint &a, HandPoint &b);
+
+// BGRA detector used by the standard Effect Filter GPU readback path.
+bool detect_hand_pair_bgra(const uint8_t *data, uint32_t width, uint32_t height,
+                           uint32_t stride, float min_blob_fraction,
+                           HandPoint &a, HandPoint &b);
