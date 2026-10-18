@@ -26,9 +26,15 @@ jobs:
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE -replace '\\','/'
+          $depsDir = Get-ChildItem "$env:GITHUB_WORKSPACE/obs-studio/.deps" -Directory |
+            Where-Object { $_.Name -like 'obs-deps-*-x64' } |
+            Select-Object -First 1
+          if (-not $depsDir) { throw "OBS dependency bundle was not found" }
+          $deps = $depsDir.FullName -replace '\\','/'
+          Write-Host "Using OBS dependencies: $deps"
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
             "-Dlibobs_DIR=$root/obs-build/libobs" `
-            "-DCMAKE_PREFIX_PATH=$root/obs-build;$root/obs-build/deps;$root/obs-build/libobs" `
+            "-DCMAKE_PREFIX_PATH=$deps;$root/obs-build;$root/obs-build/deps;$root/obs-build/libobs" `
             "-DCMAKE_MODULE_PATH=$root/obs-studio/cmake/finders"
       - name: Build plugin
         shell: pwsh
