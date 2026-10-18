@@ -12,11 +12,22 @@ add_library(obs-67-counter MODULE
   src/sixty-seven-filter.hpp
   src/hand-detector.cpp
   src/hand-detector.hpp
+  src/pose-detector.cpp
+  src/pose-detector.hpp
   src/counter-state.cpp
   src/counter-state.hpp
 )
 
 target_link_libraries(obs-67-counter PRIVATE OBS::libobs)
+
+set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to the extracted ONNX Runtime package")
+if(NOT ONNXRUNTIME_ROOT)
+  message(FATAL_ERROR "ONNXRUNTIME_ROOT is required for the v2 pose detector build")
+endif()
+
+target_include_directories(obs-67-counter PRIVATE
+  "${ONNXRUNTIME_ROOT}/include"
+)
 
 if(MSVC)
   target_compile_options(obs-67-counter PRIVATE /W4 /permissive-)
