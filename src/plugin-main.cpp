@@ -1,4 +1,5 @@
 #include <obs-module.h>
+#include "pose-detector.hpp"
 
 OBS_DECLARE_MODULE()
 
@@ -16,6 +17,11 @@ bool obs_module_load(void)
 
     blog(LOG_INFO, "[obs-67-counter] loaded");
     return true;
+}
+
+void obs_module_unload(void)
+{
+    pose_detector_shutdown();
 }
 
 const char *obs_module_description(void)
