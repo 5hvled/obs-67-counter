@@ -20,6 +20,8 @@ static void defaults(obs_data_t *s)
     obs_data_set_default_int(s, "cooldown_ms", 250);
     obs_data_set_default_int(s, "count", 0);
     obs_data_set_default_string(s, "text_source", "");
+    obs_data_set_default_string(s, "text_prefix", "");
+    obs_data_set_default_string(s, "text_postfix", "");
 }
 
 struct TextUpdateTask {
@@ -62,9 +64,13 @@ static void apply_text_update(void *param)
 static void sync_text_source(SixtySevenFilter *f, uint64_t value)
 {
     std::string source_name;
+    std::string prefix;
+    std::string postfix;
     {
         std::lock_guard<std::mutex> lock(f->mutex);
         source_name = f->text_source_name;
+        prefix = f->text_prefix;
+        postfix = f->text_postfix;
     }
 
     if (source_name.empty())
@@ -79,8 +85,8 @@ static void sync_text_source(SixtySevenFilter *f, uint64_t value)
         return;
     }
 
-    char text[64];
-    snprintf(text, sizeof(text), "%llu", (unsigned long long)value);
+    const std::string text =
+        prefix + std::to_string((unsigned long long)value) + postfix;
 
     auto *task = new TextUpdateTask;
     task->weak = obs_source_get_weak_source(source);
@@ -102,6 +108,8 @@ static void update(void *data, obs_data_t *s)
         f->stable_frames_required = (int)obs_data_get_int(s, "stable_frames");
         f->cooldown_ns = (uint64_t)obs_data_get_int(s, "cooldown_ms") * 1000000ULL;
         f->text_source_name = obs_data_get_string(s, "text_source");
+        f->text_prefix = obs_data_get_string(s, "text_prefix");
+        f->text_postfix = obs_data_get_string(s, "text_postfix");
     }
 
     sync_text_source(f, counter_get());
@@ -231,6 +239,9 @@ static obs_properties_t *properties(void *data)
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     obs_property_list_add_string(text_sources, "None", "");
     obs_enum_sources(enum_text_source, text_sources);
+
+    obs_properties_add_text(p, "text_prefix", "Prefix", OBS_TEXT_DEFAULT);
+    obs_properties_add_text(p, "text_postfix", "Postfix", OBS_TEXT_DEFAULT);
 
     if (f) {
         const uint64_t count = counter_get();
