@@ -1,0 +1,39 @@
+name: Windows test build
+on:
+  push:
+    branches: [ main, v1-hand-detector ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout OBS 32.2.2
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: 32.0.2
+          path: obs-studio
+          submodules: recursive
+      - name: Configure OBS
+        shell: pwsh
+        run: cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF
+      - name: Build libobs
+        shell: pwsh
+        run: cmake --build obs-build --config Release --target libobs
+      - name: Configure plugin
+        shell: pwsh
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -Dlibobs_DIR="$env:GITHUB_WORKSPACE/obs-build/libobs"
+      - name: Build plugin
+        shell: pwsh
+        run: cmake --build build --config Release
+      - name: Stage
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/obs-plugins/64bit
+          Copy-Item build/Release/obs-67-counter.dll dist/obs-plugins/64bit/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obs-67-counter-windows-x64-test
+          path: dist/
