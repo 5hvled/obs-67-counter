@@ -1,5 +1,6 @@
 #include "sixty-seven-filter.hpp"
 #include "hand-detector.hpp"
+#include <util/platform.h>
 
 static const char *filter_name(void *) { return "67 Counter"; }
 
