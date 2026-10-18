@@ -1,7 +1,7 @@
 name: Windows test build
 on:
   push:
-    branches: [ main, v1-hand-detector ]
+    branches: [ main, v1-hand-detector, v2-pose-landmarks ]
   workflow_dispatch:
 
 jobs:
