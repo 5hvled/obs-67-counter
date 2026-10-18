@@ -1,7 +1,6 @@
 #pragma once
 #include <obs-module.h>
 #include <cstdint>
-#include <vector>
 #include <mutex>
 
 struct HandPoint {
@@ -15,12 +14,9 @@ enum class VerticalState { Unknown, FirstAbove, SecondAbove };
 
 struct SixtySevenFilter {
     obs_source_t *context = nullptr;
-    gs_texrender_t *render = nullptr;
-    gs_stagesurf_t *stage = nullptr;
 
-    uint32_t width = 0;
-    uint32_t height = 0;
     uint64_t frame_index = 0;
+    int missing_frames = 0;
 
     bool enabled = true;
     bool debug = true;
