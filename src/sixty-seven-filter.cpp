@@ -1,5 +1,6 @@
 #include "sixty-seven-filter.hpp"
 #include "hand-detector.hpp"
+#include "counter-state.hpp"
 #include <util/platform.h>
 #include <algorithm>
 #include <cstdio>
@@ -30,20 +31,11 @@ static void update(void *data, obs_data_t *s)
     f->cooldown_ns = (uint64_t)obs_data_get_int(s, "cooldown_ms") * 1000000ULL;
 }
 
-static void adjust_count(SixtySevenFilter *f, int delta, bool reset)
+static void adjust_count(SixtySevenFilter *, int delta, bool reset)
 {
-    std::lock_guard<std::mutex> lock(f->mutex);
-    if (reset) {
-        f->count = 0;
-    } else if (delta > 0) {
-        f->count += (uint64_t)delta;
-    } else if (delta < 0) {
-        const uint64_t amount = (uint64_t)(-delta);
-        f->count = (f->count > amount) ? (f->count - amount) : 0;
-    }
-
+    const uint64_t value = reset ? (counter_set(0), 0) : counter_add(delta);
     blog(LOG_INFO, "[obs-67-counter] manual count=%llu",
-         (unsigned long long)f->count);
+         (unsigned long long)value);
 }
 
 static void hotkey_reset(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -71,9 +63,8 @@ static void *create(obs_data_t *s, obs_source_t *source)
     update(f, s);
 
     {
-        std::lock_guard<std::mutex> lock(f->mutex);
         const int64_t saved_count = obs_data_get_int(s, "count");
-        f->count = saved_count > 0 ? (uint64_t)saved_count : 0;
+        counter_set(saved_count > 0 ? (uint64_t)saved_count : 0);
     }
 
     f->hotkey_reset = obs_hotkey_register_source(
@@ -145,11 +136,7 @@ static obs_properties_t *properties(void *data)
     obs_properties_t *p = obs_properties_create();
 
     if (f) {
-        uint64_t count;
-        {
-            std::lock_guard<std::mutex> lock(f->mutex);
-            count = f->count;
-        }
+        const uint64_t count = counter_get();
         char status[96];
         snprintf(status, sizeof(status), "Current count: %llu",
                  (unsigned long long)count);
@@ -167,11 +154,9 @@ static obs_properties_t *properties(void *data)
     return p;
 }
 
-static void save(void *data, obs_data_t *settings)
+static void save(void *, obs_data_t *settings)
 {
-    auto *f = static_cast<SixtySevenFilter *>(data);
-    std::lock_guard<std::mutex> lock(f->mutex);
-    obs_data_set_int(settings, "count", (long long)f->count);
+    obs_data_set_int(settings, "count", (long long)counter_get());
 }
 
 static void reset_detection_after_loss(SixtySevenFilter *f)
@@ -213,10 +198,10 @@ static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoin
     const uint64_t now = os_gettime_ns();
     if (f->committed != VerticalState::Unknown &&
         now - f->last_count_ns >= f->cooldown_ns) {
-        ++f->count;
+        const uint64_t count = counter_add(1);
         f->last_count_ns = now;
         blog(LOG_INFO, "[obs-67-counter] 67! count=%llu",
-             (unsigned long long)f->count);
+             (unsigned long long)count);
     }
 
     f->committed = observed;
@@ -243,7 +228,7 @@ static void accept_detection(SixtySevenFilter *f, bool found,
         blog(LOG_DEBUG,
              "[obs-67-counter] %s A=(%.3f,%.3f) B=(%.3f,%.3f) count=%llu",
              path_name, a.x, a.y, b.x, b.y,
-             (unsigned long long)f->count);
+             (unsigned long long)counter_get());
     }
 }
 
