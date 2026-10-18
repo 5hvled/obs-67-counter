@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 static const char *filter_name(void *) { return "67 Counter"; }
 static const char *raw_filter_name(void *) { return "67 Counter (Raw Camera)"; }
@@ -14,6 +15,7 @@ static void defaults(obs_data_t *s)
 {
     obs_data_set_default_bool(s, "enabled", true);
     obs_data_set_default_bool(s, "debug", true);
+    obs_data_set_default_bool(s, "show_tracking_markers", true);
     obs_data_set_default_double(s, "dead_zone", 0.08);
     obs_data_set_default_double(s, "min_blob", 0.0035);
     obs_data_set_default_int(s, "stable_frames", 4);
@@ -22,6 +24,10 @@ static void defaults(obs_data_t *s)
     obs_data_set_default_string(s, "text_source", "");
     obs_data_set_default_string(s, "text_prefix", "");
     obs_data_set_default_string(s, "text_postfix", "");
+    obs_data_set_default_string(s, "challenge_text_source", "");
+    obs_data_set_default_string(s, "challenge_prefix", "");
+    obs_data_set_default_string(s, "challenge_postfix", "");
+    obs_data_set_default_int(s, "challenge_duration_seconds", 10);
 }
 
 struct TextUpdateTask {
@@ -61,18 +67,9 @@ static void apply_text_update(void *param)
     delete task;
 }
 
-static void sync_text_source(SixtySevenFilter *f, uint64_t value)
+static void queue_text_source_update(const std::string &source_name,
+                                     const std::string &text)
 {
-    std::string source_name;
-    std::string prefix;
-    std::string postfix;
-    {
-        std::lock_guard<std::mutex> lock(f->mutex);
-        source_name = f->text_source_name;
-        prefix = f->text_prefix;
-        postfix = f->text_postfix;
-    }
-
     if (source_name.empty())
         return;
 
@@ -85,15 +82,111 @@ static void sync_text_source(SixtySevenFilter *f, uint64_t value)
         return;
     }
 
-    const std::string text =
-        prefix + std::to_string((unsigned long long)value) + postfix;
-
     auto *task = new TextUpdateTask;
     task->weak = obs_source_get_weak_source(source);
     task->text = text;
     obs_source_release(source);
 
     obs_queue_task(OBS_TASK_UI, apply_text_update, task, false);
+}
+
+static void sync_text_source(SixtySevenFilter *f, uint64_t value)
+{
+    std::string source_name;
+    std::string prefix;
+    std::string postfix;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        source_name = f->text_source_name;
+        prefix = f->text_prefix;
+        postfix = f->text_postfix;
+    }
+
+    const std::string text =
+        prefix + std::to_string((unsigned long long)value) + postfix;
+    queue_text_source_update(source_name, text);
+}
+
+static void sync_challenge_text_source(SixtySevenFilter *f,
+                                       uint64_t value, bool visible)
+{
+    std::string source_name;
+    std::string prefix;
+    std::string postfix;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        source_name = f->challenge_text_source_name;
+        prefix = f->challenge_prefix;
+        postfix = f->challenge_postfix;
+    }
+
+    if (!visible) {
+        queue_text_source_update(source_name, "");
+        return;
+    }
+
+    const std::string text =
+        prefix + std::to_string((unsigned long long)value) + postfix;
+    queue_text_source_update(source_name, text);
+}
+
+static void start_challenge(SixtySevenFilter *f)
+{
+    uint64_t duration_ns;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        f->challenge_count = 0;
+        f->challenge_active = true;
+        duration_ns = (uint64_t)std::max(1, f->challenge_duration_seconds) *
+                      1000000000ULL;
+        f->challenge_end_ns = os_gettime_ns() + duration_ns;
+    }
+
+    sync_challenge_text_source(f, 0, true);
+    blog(LOG_INFO, "[obs-67-counter] temporary challenge started");
+}
+
+static void maybe_expire_challenge(SixtySevenFilter *f)
+{
+    bool expired = false;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        if (f->challenge_active && os_gettime_ns() >= f->challenge_end_ns) {
+            f->challenge_active = false;
+            f->challenge_count = 0;
+            expired = true;
+        }
+    }
+
+    if (expired) {
+        sync_challenge_text_source(f, 0, false);
+        blog(LOG_INFO, "[obs-67-counter] temporary challenge ended");
+    }
+}
+
+static void count_temporary_challenge(SixtySevenFilter *f)
+{
+    bool counted = false;
+    bool expired = false;
+    uint64_t value = 0;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        if (f->challenge_active) {
+            if (os_gettime_ns() >= f->challenge_end_ns) {
+                f->challenge_active = false;
+                f->challenge_count = 0;
+                expired = true;
+            } else {
+                value = ++f->challenge_count;
+                counted = true;
+            }
+        }
+    }
+
+    if (expired)
+        sync_challenge_text_source(f, 0, false);
+    else if (counted)
+        sync_challenge_text_source(f, value, true);
 }
 
 static void update(void *data, obs_data_t *s)
@@ -103,6 +196,7 @@ static void update(void *data, obs_data_t *s)
         std::lock_guard<std::mutex> lock(f->mutex);
         f->enabled = obs_data_get_bool(s, "enabled");
         f->debug = obs_data_get_bool(s, "debug");
+        f->show_tracking_markers = obs_data_get_bool(s, "show_tracking_markers");
         f->dead_zone = (float)obs_data_get_double(s, "dead_zone");
         f->min_blob_fraction = (float)obs_data_get_double(s, "min_blob");
         f->stable_frames_required = (int)obs_data_get_int(s, "stable_frames");
@@ -110,9 +204,23 @@ static void update(void *data, obs_data_t *s)
         f->text_source_name = obs_data_get_string(s, "text_source");
         f->text_prefix = obs_data_get_string(s, "text_prefix");
         f->text_postfix = obs_data_get_string(s, "text_postfix");
+        f->challenge_text_source_name = obs_data_get_string(s, "challenge_text_source");
+        f->challenge_prefix = obs_data_get_string(s, "challenge_prefix");
+        f->challenge_postfix = obs_data_get_string(s, "challenge_postfix");
+        f->challenge_duration_seconds =
+            (int)obs_data_get_int(s, "challenge_duration_seconds");
     }
 
     sync_text_source(f, counter_get());
+
+    bool challenge_active;
+    uint64_t challenge_value;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        challenge_active = f->challenge_active;
+        challenge_value = f->challenge_count;
+    }
+    sync_challenge_text_source(f, challenge_value, challenge_active);
 }
 
 static void adjust_count(SixtySevenFilter *f, int delta, bool reset)
@@ -141,6 +249,13 @@ static void hotkey_minus(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed
         adjust_count(static_cast<SixtySevenFilter *>(data), -1, false);
 }
 
+static void hotkey_start_challenge(void *data, obs_hotkey_id,
+                                   obs_hotkey_t *, bool pressed)
+{
+    if (pressed)
+        start_challenge(static_cast<SixtySevenFilter *>(data));
+}
+
 static void *create(obs_data_t *s, obs_source_t *source)
 {
     auto *f = new SixtySevenFilter;
@@ -159,7 +274,11 @@ static void *create(obs_data_t *s, obs_source_t *source)
         source, "67Counter.PlusOne", "67 Counter: +1", hotkey_plus, f);
     f->hotkey_minus = obs_hotkey_register_source(
         source, "67Counter.MinusOne", "67 Counter: -1", hotkey_minus, f);
+    f->hotkey_start_challenge = obs_hotkey_register_source(
+        source, "67Counter.StartTemporary",
+        "67 Counter: Start temporary counter", hotkey_start_challenge, f);
 
+    sync_challenge_text_source(f, 0, false);
     return f;
 }
 
@@ -177,6 +296,10 @@ static void destroy_graphics_resources(SixtySevenFilter *f)
         gs_texrender_destroy(f->sample_render);
         f->sample_render = nullptr;
     }
+    if (f->debug_marker_texture) {
+        gs_texture_destroy(f->debug_marker_texture);
+        f->debug_marker_texture = nullptr;
+    }
     f->stage_pending[0] = false;
     f->stage_pending[1] = false;
     f->sample_width = 0;
@@ -189,7 +312,7 @@ static void destroy(void *data)
     if (!f)
         return;
 
-    if (f->sample_render || f->stage[0] || f->stage[1]) {
+    if (f->sample_render || f->stage[0] || f->stage[1] || f->debug_marker_texture) {
         obs_enter_graphics();
         destroy_graphics_resources(f);
         obs_leave_graphics();
@@ -213,6 +336,12 @@ static bool button_plus(obs_properties_t *, obs_property_t *, void *data)
 static bool button_minus(obs_properties_t *, obs_property_t *, void *data)
 {
     adjust_count(static_cast<SixtySevenFilter *>(data), -1, false);
+    return true;
+}
+
+static bool button_start_challenge(obs_properties_t *, obs_property_t *, void *data)
+{
+    start_challenge(static_cast<SixtySevenFilter *>(data));
     return true;
 }
 
@@ -243,6 +372,19 @@ static obs_properties_t *properties(void *data)
     obs_properties_add_text(p, "text_prefix", "Prefix", OBS_TEXT_DEFAULT);
     obs_properties_add_text(p, "text_postfix", "Postfix", OBS_TEXT_DEFAULT);
 
+    obs_property_t *challenge_sources = obs_properties_add_list(
+        p, "challenge_text_source", "Temporary counter text source",
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(challenge_sources, "None", "");
+    obs_enum_sources(enum_text_source, challenge_sources);
+    obs_properties_add_text(p, "challenge_prefix",
+                            "Temporary prefix", OBS_TEXT_DEFAULT);
+    obs_properties_add_text(p, "challenge_postfix",
+                            "Temporary postfix", OBS_TEXT_DEFAULT);
+    obs_properties_add_int_slider(p, "challenge_duration_seconds",
+                                  "Temporary counter duration (seconds)",
+                                  1, 60, 1);
+
     if (f) {
         const uint64_t count = counter_get();
         char status[96];
@@ -252,9 +394,14 @@ static obs_properties_t *properties(void *data)
         obs_properties_add_button2(p, "count_plus", "+1", button_plus, f);
         obs_properties_add_button2(p, "count_minus", "-1", button_minus, f);
         obs_properties_add_button2(p, "count_reset", "Reset counter", button_reset, f);
+        obs_properties_add_button2(p, "challenge_start",
+                                   "Start temporary counter now",
+                                   button_start_challenge, f);
     }
     obs_properties_add_bool(p, "enabled", "Enable detection");
     obs_properties_add_bool(p, "debug", "Debug logging");
+    obs_properties_add_bool(p, "show_tracking_markers",
+                            "Show green hand tracking markers");
     obs_properties_add_float_slider(p, "dead_zone", "Vertical dead zone", 0.02, 0.30, 0.01);
     obs_properties_add_float_slider(p, "min_blob", "Minimum hand region", 0.001, 0.03, 0.0005);
     obs_properties_add_int_slider(p, "stable_frames", "Stable samples", 1, 15, 1);
@@ -272,6 +419,8 @@ static void reset_detection_after_loss(SixtySevenFilter *f)
     ++f->missing_frames;
     f->candidate = VerticalState::Unknown;
     f->candidate_frames = 0;
+    f->a.valid = false;
+    f->b.valid = false;
     if (f->missing_frames >= 10)
         f->committed = VerticalState::Unknown;
 }
@@ -348,8 +497,10 @@ static void accept_detection(SixtySevenFilter *f, bool found,
         }
     }
 
-    if (changed_count != UINT64_MAX)
+    if (changed_count != UINT64_MAX) {
         sync_text_source(f, changed_count);
+        count_temporary_challenge(f);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -360,6 +511,8 @@ static obs_source_frame *filter_video(void *data, obs_source_frame *frame)
     auto *f = static_cast<SixtySevenFilter *>(data);
     if (!frame)
         return frame;
+
+    maybe_expire_challenge(f);
 
     bool enabled;
     bool debug;
@@ -487,9 +640,90 @@ static void process_previous_stage(SixtySevenFilter *f, int index,
     f->stage_pending[index] = false;
 }
 
+static bool ensure_debug_marker_texture(SixtySevenFilter *f)
+{
+    if (f->debug_marker_texture)
+        return true;
+
+    const uint32_t size = 40;
+    std::vector<uint8_t> pixels((size_t)size * size * 4, 0);
+    const float center = (float)(size - 1) * 0.5f;
+    const float outer2 = 18.0f * 18.0f;
+    const float inner2 = 13.0f * 13.0f;
+    const float dot2 = 3.0f * 3.0f;
+
+    for (uint32_t y = 0; y < size; ++y) {
+        for (uint32_t x = 0; x < size; ++x) {
+            const float dx = (float)x - center;
+            const float dy = (float)y - center;
+            const float d2 = dx * dx + dy * dy;
+            if ((d2 <= outer2 && d2 >= inner2) || d2 <= dot2) {
+                const size_t off = ((size_t)y * size + x) * 4;
+                pixels[off + 0] = 0;
+                pixels[off + 1] = 255;
+                pixels[off + 2] = 0;
+                pixels[off + 3] = 255;
+            }
+        }
+    }
+
+    const uint8_t *initial = pixels.data();
+    f->debug_marker_texture =
+        gs_texture_create(size, size, GS_RGBA, 1, &initial, 0);
+    return f->debug_marker_texture != nullptr;
+}
+
+static void draw_tracking_markers(SixtySevenFilter *f,
+                                  uint32_t width, uint32_t height)
+{
+    bool show;
+    HandPoint a;
+    HandPoint b;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        show = f->show_tracking_markers;
+        a = f->a;
+        b = f->b;
+    }
+
+    if (!show || (!a.valid && !b.valid) ||
+        !ensure_debug_marker_texture(f))
+        return;
+
+    const float marker_size = 40.0f;
+    gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+    gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+    gs_effect_set_texture(image, f->debug_marker_texture);
+
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
+
+    const auto draw_one = [&](const HandPoint &p) {
+        if (!p.valid)
+            return;
+
+        const float x = p.x * (float)width - marker_size * 0.5f;
+        const float y = p.y * (float)height - marker_size * 0.5f;
+
+        gs_matrix_push();
+        gs_matrix_translate3f(x, y, 0.0f);
+        while (gs_effect_loop(effect, "Draw"))
+            gs_draw_sprite(f->debug_marker_texture, 0,
+                           (uint32_t)marker_size,
+                           (uint32_t)marker_size);
+        gs_matrix_pop();
+    };
+
+    draw_one(a);
+    draw_one(b);
+    gs_blend_state_pop();
+}
+
 static void effect_render(void *data, gs_effect_t *)
 {
     auto *f = static_cast<SixtySevenFilter *>(data);
+    maybe_expire_challenge(f);
+
     obs_source_t *target = obs_filter_get_target(f->context);
     obs_source_t *parent = obs_filter_get_parent(f->context);
 
@@ -540,6 +774,11 @@ static void effect_render(void *data, gs_effect_t *)
     }
 
     obs_source_skip_video_filter(f->context);
+
+    const uint32_t output_width = obs_source_get_base_width(target);
+    const uint32_t output_height = obs_source_get_base_height(target);
+    if (output_width && output_height)
+        draw_tracking_markers(f, output_width, output_height);
 }
 
 static enum gs_color_space effect_color_space(void *data, size_t count,
