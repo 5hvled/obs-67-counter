@@ -367,54 +367,100 @@ static obs_properties_t *properties(void *data)
     auto *f = static_cast<SixtySevenFilter *>(data);
     obs_properties_t *p = obs_properties_create();
 
+    /* Counter ------------------------------------------------------------ */
+    obs_properties_t *counter = obs_properties_create();
+
     obs_property_t *text_sources = obs_properties_add_list(
-        p, "text_source", "Counter text source",
+        counter, "text_source", "Counter text source",
         OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
     obs_property_list_add_string(text_sources, "None", "");
     obs_enum_sources(enum_text_source, text_sources);
 
-    obs_properties_add_text(p, "text_prefix", "Prefix", OBS_TEXT_DEFAULT);
-    obs_properties_add_text(p, "text_postfix", "Postfix", OBS_TEXT_DEFAULT);
-
-    obs_property_t *challenge_sources = obs_properties_add_list(
-        p, "challenge_text_source", "Temporary counter text source",
-        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    obs_property_list_add_string(challenge_sources, "None", "");
-    obs_enum_sources(enum_text_source, challenge_sources);
-    obs_properties_add_text(p, "challenge_prefix",
-                            "Temporary prefix", OBS_TEXT_DEFAULT);
-    obs_properties_add_text(p, "challenge_postfix",
-                            "Temporary postfix", OBS_TEXT_DEFAULT);
-    obs_properties_add_int_slider(p, "challenge_duration_seconds",
-                                  "Temporary counter duration (seconds)",
-                                  1, 60, 1);
+    obs_properties_add_text(counter, "text_prefix",
+                            "Prefix", OBS_TEXT_DEFAULT);
+    obs_properties_add_text(counter, "text_postfix",
+                            "Postfix", OBS_TEXT_DEFAULT);
 
     if (f) {
         const uint64_t count = counter_get();
         char status[96];
         snprintf(status, sizeof(status), "Current count: %llu",
                  (unsigned long long)count);
-        obs_properties_add_text(p, "count_status", status, OBS_TEXT_INFO);
-        obs_properties_add_button2(p, "count_plus", "+1", button_plus, f);
-        obs_properties_add_button2(p, "count_minus", "-1", button_minus, f);
-        obs_properties_add_button2(p, "count_reset", "Reset counter", button_reset, f);
-        obs_properties_add_button2(p, "challenge_start",
+        obs_properties_add_text(counter, "count_status",
+                                status, OBS_TEXT_INFO);
+        obs_properties_add_button2(counter, "count_plus",
+                                   "+1", button_plus, f);
+        obs_properties_add_button2(counter, "count_minus",
+                                   "-1", button_minus, f);
+        obs_properties_add_button2(counter, "count_reset",
+                                   "Reset counter", button_reset, f);
+    }
+
+    obs_properties_add_group(p, "counter_group", "Counter",
+                             OBS_GROUP_NORMAL, counter);
+
+    /* Temporary Challenge ----------------------------------------------- */
+    obs_properties_t *challenge = obs_properties_create();
+
+    obs_property_t *challenge_sources = obs_properties_add_list(
+        challenge, "challenge_text_source",
+        "Temporary counter text source",
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(challenge_sources, "None", "");
+    obs_enum_sources(enum_text_source, challenge_sources);
+
+    obs_properties_add_text(challenge, "challenge_prefix",
+                            "Prefix", OBS_TEXT_DEFAULT);
+    obs_properties_add_text(challenge, "challenge_postfix",
+                            "Postfix", OBS_TEXT_DEFAULT);
+    obs_properties_add_int_slider(challenge,
+                                  "challenge_duration_seconds",
+                                  "Duration (seconds)",
+                                  1, 60, 1);
+
+    if (f) {
+        obs_properties_add_button2(challenge, "challenge_start",
                                    "Start temporary counter now",
                                    button_start_challenge, f);
     }
-    obs_properties_add_bool(p, "enabled", "Enable detection");
-    obs_properties_add_bool(p, "debug", "Debug logging");
-    obs_properties_add_bool(p, "show_tracking_markers",
-                            "Show green hand tracking markers");
-    obs_properties_add_float_slider(p, "pose_confidence",
+
+    obs_properties_add_group(p, "challenge_group",
+                             "Temporary Challenge",
+                             OBS_GROUP_NORMAL, challenge);
+
+    /* Tracking ----------------------------------------------------------- */
+    obs_properties_t *tracking = obs_properties_create();
+
+    obs_properties_add_bool(tracking, "enabled",
+                            "Enable detection");
+    obs_properties_add_bool(tracking, "show_tracking_markers",
+                            "Show green forearm tracking");
+    obs_properties_add_float_slider(tracking, "pose_confidence",
                                     "Pose landmark confidence",
                                     0.05, 0.90, 0.05);
-    obs_properties_add_float_slider(p, "dead_zone", "Vertical dead zone", 0.02, 0.30, 0.01);
-    obs_properties_add_float_slider(p, "min_blob",
+
+    obs_properties_add_group(p, "tracking_group", "Tracking",
+                             OBS_GROUP_NORMAL, tracking);
+
+    /* Advanced ----------------------------------------------------------- */
+    obs_properties_t *advanced = obs_properties_create();
+
+    obs_properties_add_bool(advanced, "debug",
+                            "Debug logging");
+    obs_properties_add_float_slider(advanced, "dead_zone",
+                                    "Vertical dead zone",
+                                    0.02, 0.30, 0.01);
+    obs_properties_add_int_slider(advanced, "stable_frames",
+                                  "Stable samples", 1, 15, 1);
+    obs_properties_add_int_slider(advanced, "cooldown_ms",
+                                  "Cooldown (ms)", 0, 1500, 25);
+    obs_properties_add_float_slider(advanced, "min_blob",
                                     "Raw Camera only: minimum skin region",
                                     0.001, 0.03, 0.0005);
-    obs_properties_add_int_slider(p, "stable_frames", "Stable samples", 1, 15, 1);
-    obs_properties_add_int_slider(p, "cooldown_ms", "Cooldown (ms)", 0, 1500, 25);
+
+    obs_properties_add_group(p, "advanced_group", "Advanced",
+                             OBS_GROUP_NORMAL, advanced);
+
     return p;
 }
 
