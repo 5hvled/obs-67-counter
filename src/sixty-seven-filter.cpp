@@ -4,6 +4,8 @@
 #include <util/platform.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
+#include <string>
 
 static const char *filter_name(void *) { return "67 Counter"; }
 static const char *raw_filter_name(void *) { return "67 Counter (Raw Camera)"; }
@@ -17,25 +19,100 @@ static void defaults(obs_data_t *s)
     obs_data_set_default_int(s, "stable_frames", 4);
     obs_data_set_default_int(s, "cooldown_ms", 250);
     obs_data_set_default_int(s, "count", 0);
+    obs_data_set_default_string(s, "text_source", "");
+}
+
+struct TextUpdateTask {
+    obs_weak_source_t *weak = nullptr;
+    std::string text;
+};
+
+static bool is_text_source(obs_source_t *source)
+{
+    if (!source)
+        return false;
+
+    const char *id = obs_source_get_unversioned_id(source);
+    return id && (!strcmp(id, "text_gdiplus") ||
+                  !strcmp(id, "text_ft2_source"));
+}
+
+static void apply_text_update(void *param)
+{
+    auto *task = static_cast<TextUpdateTask *>(param);
+    obs_source_t *source = obs_weak_source_get_source(task->weak);
+
+    if (source) {
+        obs_data_t *settings = obs_source_get_settings(source);
+
+        // Force manual-text mode for both OBS text implementations.
+        obs_data_set_bool(settings, "read_from_file", false);
+        obs_data_set_bool(settings, "from_file", false);
+        obs_data_set_string(settings, "text", task->text.c_str());
+
+        obs_source_update(source, settings);
+        obs_data_release(settings);
+        obs_source_release(source);
+    }
+
+    obs_weak_source_release(task->weak);
+    delete task;
+}
+
+static void sync_text_source(SixtySevenFilter *f, uint64_t value)
+{
+    std::string source_name;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        source_name = f->text_source_name;
+    }
+
+    if (source_name.empty())
+        return;
+
+    obs_source_t *source = obs_get_source_by_name(source_name.c_str());
+    if (!source)
+        return;
+
+    if (!is_text_source(source)) {
+        obs_source_release(source);
+        return;
+    }
+
+    char text[64];
+    snprintf(text, sizeof(text), "%llu", (unsigned long long)value);
+
+    auto *task = new TextUpdateTask;
+    task->weak = obs_source_get_weak_source(source);
+    task->text = text;
+    obs_source_release(source);
+
+    obs_queue_task(OBS_TASK_UI, apply_text_update, task, false);
 }
 
 static void update(void *data, obs_data_t *s)
 {
     auto *f = static_cast<SixtySevenFilter *>(data);
-    std::lock_guard<std::mutex> lock(f->mutex);
-    f->enabled = obs_data_get_bool(s, "enabled");
-    f->debug = obs_data_get_bool(s, "debug");
-    f->dead_zone = (float)obs_data_get_double(s, "dead_zone");
-    f->min_blob_fraction = (float)obs_data_get_double(s, "min_blob");
-    f->stable_frames_required = (int)obs_data_get_int(s, "stable_frames");
-    f->cooldown_ns = (uint64_t)obs_data_get_int(s, "cooldown_ms") * 1000000ULL;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        f->enabled = obs_data_get_bool(s, "enabled");
+        f->debug = obs_data_get_bool(s, "debug");
+        f->dead_zone = (float)obs_data_get_double(s, "dead_zone");
+        f->min_blob_fraction = (float)obs_data_get_double(s, "min_blob");
+        f->stable_frames_required = (int)obs_data_get_int(s, "stable_frames");
+        f->cooldown_ns = (uint64_t)obs_data_get_int(s, "cooldown_ms") * 1000000ULL;
+        f->text_source_name = obs_data_get_string(s, "text_source");
+    }
+
+    sync_text_source(f, counter_get());
 }
 
-static void adjust_count(SixtySevenFilter *, int delta, bool reset)
+static void adjust_count(SixtySevenFilter *f, int delta, bool reset)
 {
     const uint64_t value = reset ? (counter_set(0), 0) : counter_add(delta);
     blog(LOG_INFO, "[obs-67-counter] manual count=%llu",
          (unsigned long long)value);
+    sync_text_source(f, value);
 }
 
 static void hotkey_reset(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
@@ -130,10 +207,29 @@ static bool button_minus(obs_properties_t *, obs_property_t *, void *data)
     return true;
 }
 
+static bool enum_text_source(void *param, obs_source_t *source)
+{
+    auto *list = static_cast<obs_property_t *>(param);
+    if (!is_text_source(source))
+        return true;
+
+    const char *name = obs_source_get_name(source);
+    if (name && *name)
+        obs_property_list_add_string(list, name, name);
+
+    return true;
+}
+
 static obs_properties_t *properties(void *data)
 {
     auto *f = static_cast<SixtySevenFilter *>(data);
     obs_properties_t *p = obs_properties_create();
+
+    obs_property_t *text_sources = obs_properties_add_list(
+        p, "text_source", "Counter text source",
+        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+    obs_property_list_add_string(text_sources, "None", "");
+    obs_enum_sources(enum_text_source, text_sources);
 
     if (f) {
         const uint64_t count = counter_get();
@@ -168,7 +264,7 @@ static void reset_detection_after_loss(SixtySevenFilter *f)
         f->committed = VerticalState::Unknown;
 }
 
-static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoint &b)
+static uint64_t consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoint &b)
 {
     const float dy = a.y - b.y;
     VerticalState observed = VerticalState::Unknown;
@@ -180,20 +276,20 @@ static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoin
     if (observed == VerticalState::Unknown) {
         f->candidate = VerticalState::Unknown;
         f->candidate_frames = 0;
-        return;
+        return UINT64_MAX;
     }
 
     if (observed != f->candidate) {
         f->candidate = observed;
         f->candidate_frames = 1;
-        return;
+        return UINT64_MAX;
     }
 
     ++f->candidate_frames;
     if (f->candidate_frames < f->stable_frames_required)
-        return;
+        return UINT64_MAX;
     if (observed == f->committed)
-        return;
+        return UINT64_MAX;
 
     const uint64_t now = os_gettime_ns();
     if (f->committed != VerticalState::Unknown &&
@@ -202,9 +298,12 @@ static void consume_pair(SixtySevenFilter *f, const HandPoint &a, const HandPoin
         f->last_count_ns = now;
         blog(LOG_INFO, "[obs-67-counter] 67! count=%llu",
              (unsigned long long)count);
+        // The text source is updated after we release the detector mutex.
+        return count;
     }
 
     f->committed = observed;
+    return UINT64_MAX;
 }
 
 static void accept_detection(SixtySevenFilter *f, bool found,
@@ -212,24 +311,31 @@ static void accept_detection(SixtySevenFilter *f, bool found,
                              bool debug, uint64_t sample_index,
                              const char *path_name)
 {
-    std::lock_guard<std::mutex> lock(f->mutex);
+    uint64_t changed_count = UINT64_MAX;
 
-    if (!found) {
-        reset_detection_after_loss(f);
-        return;
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+
+        if (!found) {
+            reset_detection_after_loss(f);
+            return;
+        }
+
+        f->missing_frames = 0;
+        f->a = a;
+        f->b = b;
+        changed_count = consume_pair(f, a, b);
+
+        if (debug && (sample_index % 90) == 0) {
+            blog(LOG_DEBUG,
+                 "[obs-67-counter] %s A=(%.3f,%.3f) B=(%.3f,%.3f) count=%llu",
+                 path_name, a.x, a.y, b.x, b.y,
+                 (unsigned long long)counter_get());
+        }
     }
 
-    f->missing_frames = 0;
-    f->a = a;
-    f->b = b;
-    consume_pair(f, a, b);
-
-    if (debug && (sample_index % 90) == 0) {
-        blog(LOG_DEBUG,
-             "[obs-67-counter] %s A=(%.3f,%.3f) B=(%.3f,%.3f) count=%llu",
-             path_name, a.x, a.y, b.x, b.y,
-             (unsigned long long)counter_get());
-    }
+    if (changed_count != UINT64_MAX)
+        sync_text_source(f, changed_count);
 }
 
 /* ------------------------------------------------------------------------- */
