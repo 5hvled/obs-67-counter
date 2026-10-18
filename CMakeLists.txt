@@ -12,6 +12,10 @@ add_library(obs-67-counter MODULE
   src/sixty-seven-filter.hpp
   src/hand-detector.cpp
   src/hand-detector.hpp
+  src/counter-state.cpp
+  src/counter-state.hpp
+  src/counter-display.cpp
+  src/counter-display.hpp
 )
 
 target_link_libraries(obs-67-counter PRIVATE OBS::libobs)
