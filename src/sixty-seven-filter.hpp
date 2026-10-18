@@ -1,5 +1,6 @@
 #pragma once
 #include <obs-module.h>
+#include <obs-hotkey.h>
 #include <graphics/graphics.h>
 #include <cstdint>
 #include <mutex>
@@ -31,6 +32,10 @@ struct SixtySevenFilter {
     int candidate_frames = 0;
     uint64_t last_count_ns = 0;
     uint64_t count = 0;
+
+    obs_hotkey_id hotkey_reset = OBS_INVALID_HOTKEY_ID;
+    obs_hotkey_id hotkey_plus = OBS_INVALID_HOTKEY_ID;
+    obs_hotkey_id hotkey_minus = OBS_INVALID_HOTKEY_ID;
 
     HandPoint a, b;
 
