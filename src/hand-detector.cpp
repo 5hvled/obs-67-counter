@@ -203,3 +203,16 @@ bool detect_hand_pair_frame(const obs_source_frame *frame, float min_frac,
         std::swap(a, b);
     return true;
 }
+
+bool detect_hand_pair_bgra(const uint8_t *data, uint32_t width, uint32_t height,
+                           uint32_t stride, float min_blob_fraction,
+                           HandPoint &a, HandPoint &b)
+{
+    obs_source_frame frame = {};
+    frame.data[0] = const_cast<uint8_t *>(data);
+    frame.linesize[0] = stride;
+    frame.width = width;
+    frame.height = height;
+    frame.format = VIDEO_FORMAT_BGRA;
+    return detect_hand_pair_frame(&frame, min_blob_fraction, a, b);
+}
