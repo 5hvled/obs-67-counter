@@ -23,6 +23,7 @@ struct SixtySevenFilter {
 
     bool enabled = true;
     bool debug = true;
+    bool show_tracking_markers = true;
     float dead_zone = 0.08f;
     float min_blob_fraction = 0.0035f;
     int stable_frames_required = 4;
@@ -36,9 +37,18 @@ struct SixtySevenFilter {
     std::string text_prefix;
     std::string text_postfix;
 
+    std::string challenge_text_source_name;
+    std::string challenge_prefix;
+    std::string challenge_postfix;
+    int challenge_duration_seconds = 10;
+    bool challenge_active = false;
+    uint64_t challenge_count = 0;
+    uint64_t challenge_end_ns = 0;
+
     obs_hotkey_id hotkey_reset = OBS_INVALID_HOTKEY_ID;
     obs_hotkey_id hotkey_plus = OBS_INVALID_HOTKEY_ID;
     obs_hotkey_id hotkey_minus = OBS_INVALID_HOTKEY_ID;
+    obs_hotkey_id hotkey_start_challenge = OBS_INVALID_HOTKEY_ID;
 
     HandPoint a, b;
 
@@ -51,6 +61,7 @@ struct SixtySevenFilter {
     int stage_write = 0;
     uint32_t sample_width = 0;
     uint32_t sample_height = 0;
+    gs_texture_t *debug_marker_texture = nullptr;
 
     std::mutex mutex;
 };
