@@ -2,6 +2,7 @@
 #include "hand-detector.hpp"
 #include <util/platform.h>
 #include <algorithm>
+#include <cstdio>
 
 static const char *filter_name(void *) { return "67 Counter"; }
 static const char *raw_filter_name(void *) { return "67 Counter (Raw Camera)"; }
@@ -14,6 +15,7 @@ static void defaults(obs_data_t *s)
     obs_data_set_default_double(s, "min_blob", 0.0035);
     obs_data_set_default_int(s, "stable_frames", 4);
     obs_data_set_default_int(s, "cooldown_ms", 250);
+    obs_data_set_default_int(s, "count", 0);
 }
 
 static void update(void *data, obs_data_t *s)
@@ -28,11 +30,59 @@ static void update(void *data, obs_data_t *s)
     f->cooldown_ns = (uint64_t)obs_data_get_int(s, "cooldown_ms") * 1000000ULL;
 }
 
+static void adjust_count(SixtySevenFilter *f, int delta, bool reset)
+{
+    std::lock_guard<std::mutex> lock(f->mutex);
+    if (reset) {
+        f->count = 0;
+    } else if (delta > 0) {
+        f->count += (uint64_t)delta;
+    } else if (delta < 0) {
+        const uint64_t amount = (uint64_t)(-delta);
+        f->count = (f->count > amount) ? (f->count - amount) : 0;
+    }
+
+    blog(LOG_INFO, "[obs-67-counter] manual count=%llu",
+         (unsigned long long)f->count);
+}
+
+static void hotkey_reset(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+    if (pressed)
+        adjust_count(static_cast<SixtySevenFilter *>(data), 0, true);
+}
+
+static void hotkey_plus(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+    if (pressed)
+        adjust_count(static_cast<SixtySevenFilter *>(data), 1, false);
+}
+
+static void hotkey_minus(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
+{
+    if (pressed)
+        adjust_count(static_cast<SixtySevenFilter *>(data), -1, false);
+}
+
 static void *create(obs_data_t *s, obs_source_t *source)
 {
     auto *f = new SixtySevenFilter;
     f->context = source;
     update(f, s);
+
+    {
+        std::lock_guard<std::mutex> lock(f->mutex);
+        const int64_t saved_count = obs_data_get_int(s, "count");
+        f->count = saved_count > 0 ? (uint64_t)saved_count : 0;
+    }
+
+    f->hotkey_reset = obs_hotkey_register_source(
+        source, "67Counter.Reset", "67 Counter: Reset", hotkey_reset, f);
+    f->hotkey_plus = obs_hotkey_register_source(
+        source, "67Counter.PlusOne", "67 Counter: +1", hotkey_plus, f);
+    f->hotkey_minus = obs_hotkey_register_source(
+        source, "67Counter.MinusOne", "67 Counter: -1", hotkey_minus, f);
+
     return f;
 }
 
@@ -71,9 +121,43 @@ static void destroy(void *data)
     delete f;
 }
 
-static obs_properties_t *properties(void *)
+static bool button_reset(obs_properties_t *, obs_property_t *, void *data)
 {
+    adjust_count(static_cast<SixtySevenFilter *>(data), 0, true);
+    return true;
+}
+
+static bool button_plus(obs_properties_t *, obs_property_t *, void *data)
+{
+    adjust_count(static_cast<SixtySevenFilter *>(data), 1, false);
+    return true;
+}
+
+static bool button_minus(obs_properties_t *, obs_property_t *, void *data)
+{
+    adjust_count(static_cast<SixtySevenFilter *>(data), -1, false);
+    return true;
+}
+
+static obs_properties_t *properties(void *data)
+{
+    auto *f = static_cast<SixtySevenFilter *>(data);
     obs_properties_t *p = obs_properties_create();
+
+    if (f) {
+        uint64_t count;
+        {
+            std::lock_guard<std::mutex> lock(f->mutex);
+            count = f->count;
+        }
+        char status[96];
+        snprintf(status, sizeof(status), "Current count: %llu",
+                 (unsigned long long)count);
+        obs_properties_add_text(p, "count_status", status, OBS_TEXT_INFO);
+        obs_properties_add_button2(p, "count_plus", "+1", button_plus, f);
+        obs_properties_add_button2(p, "count_minus", "-1", button_minus, f);
+        obs_properties_add_button2(p, "count_reset", "Reset counter", button_reset, f);
+    }
     obs_properties_add_bool(p, "enabled", "Enable detection");
     obs_properties_add_bool(p, "debug", "Debug logging");
     obs_properties_add_float_slider(p, "dead_zone", "Vertical dead zone", 0.02, 0.30, 0.01);
@@ -81,6 +165,13 @@ static obs_properties_t *properties(void *)
     obs_properties_add_int_slider(p, "stable_frames", "Stable samples", 1, 15, 1);
     obs_properties_add_int_slider(p, "cooldown_ms", "Cooldown (ms)", 0, 1500, 25);
     return p;
+}
+
+static void save(void *data, obs_data_t *settings)
+{
+    auto *f = static_cast<SixtySevenFilter *>(data);
+    std::lock_guard<std::mutex> lock(f->mutex);
+    obs_data_set_int(settings, "count", (long long)f->count);
 }
 
 static void reset_detection_after_loss(SixtySevenFilter *f)
@@ -367,6 +458,7 @@ static obs_source_info make_effect_filter_info()
     info.get_defaults = defaults;
     info.get_properties = properties;
     info.update = update;
+    info.save = save;
     info.video_render = effect_render;
     info.video_get_color_space = effect_color_space;
     return info;
@@ -384,6 +476,7 @@ static obs_source_info make_raw_filter_info()
     info.get_defaults = defaults;
     info.get_properties = properties;
     info.update = update;
+    info.save = save;
     info.filter_video = filter_video;
     return info;
 }
