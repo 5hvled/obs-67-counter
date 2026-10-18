@@ -143,6 +143,7 @@ static void *create(obs_data_t *s, obs_source_t *source)
         const int64_t saved_count = obs_data_get_int(s, "count");
         counter_set(saved_count > 0 ? (uint64_t)saved_count : 0);
     }
+    sync_text_source(f, counter_get());
 
     f->hotkey_reset = obs_hotkey_register_source(
         source, "67Counter.Reset", "67 Counter: Reset", hotkey_reset, f);
@@ -291,19 +292,21 @@ static uint64_t consume_pair(SixtySevenFilter *f, const HandPoint &a, const Hand
     if (observed == f->committed)
         return UINT64_MAX;
 
+    uint64_t changed_count = UINT64_MAX;
     const uint64_t now = os_gettime_ns();
+
     if (f->committed != VerticalState::Unknown &&
         now - f->last_count_ns >= f->cooldown_ns) {
-        const uint64_t count = counter_add(1);
+        changed_count = counter_add(1);
         f->last_count_ns = now;
         blog(LOG_INFO, "[obs-67-counter] 67! count=%llu",
-             (unsigned long long)count);
-        // The text source is updated after we release the detector mutex.
-        return count;
+             (unsigned long long)changed_count);
     }
 
+    // Commit the new high/low state whether or not cooldown allowed a count.
+    // This prevents one crossover from counting repeatedly while held.
     f->committed = observed;
-    return UINT64_MAX;
+    return changed_count;
 }
 
 static void accept_detection(SixtySevenFilter *f, bool found,
