@@ -4,6 +4,9 @@ on:
     branches: [ main, v1-hand-detector, v2-pose-landmarks, v2-stable-release ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
@@ -120,3 +123,64 @@ jobs:
         with:
           name: OBS-67-Counter-v2.0.0-Full
           path: release/
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0.0
+          target_commitish: v2-stable-release
+          name: OBS 67 Counter v2.0.0
+          draft: false
+          prerelease: false
+          make_latest: true
+          body: |
+            # OBS 67 Counter v2.0.0
+
+            First stable release of OBS 67 Counter.
+
+            Automatically detects and counts the alternating "67" forearm gesture using MoveNet pose landmark tracking.
+
+            ## Features
+            - MoveNet pose landmark tracking
+            - Automatic 67 gesture detection
+            - Permanent counter
+            - Temporary challenge counter
+            - OBS text source integration
+            - Prefix / postfix support
+            - Adjustable tracking sensitivity
+            - Green forearm debug tracking
+            - Manual +1 / -1 / reset controls
+            - Streamer.bot support
+            - One-click Windows installer
+            - Portable/manual installation package
+
+            ## Recommended settings
+            - Pose Confidence: `0.20`
+            - Vertical Dead Zone: `0.06`
+            - Stable Samples: `2`
+            - Cooldown: `100 ms`
+
+            These are already configured as the default settings.
+
+            ## Installation
+            **Recommended:** download `OBS-67-Counter-Setup-v2.0.0.exe`, close OBS, run the installer, then reopen OBS.
+
+            Add the filter from:
+            `Camera Source → Filters → Effect Filters → + → 67 Counter`
+
+            For portable/custom OBS installs, use `OBS-67-Counter-Portable-v2.0.0.zip`.
+
+            ## Streamer.bot
+            The temporary counter exposes the global OBS hotkey:
+            `67Counter.StartTemporary`
+
+            ## Compatibility
+            - Windows x64
+            - OBS Studio 32.x
+            - Built against OBS Studio 32.2.2
+
+            Created by @5hvled
+          files: |
+            release/OBS-67-Counter-Setup-v2.0.0.exe
+            release/OBS-67-Counter-Portable-v2.0.0.zip
+            release/README-FIRST.txt
