@@ -3,6 +3,7 @@
 #define MyAppPublisher "5hvled"
 
 [Setup]
+SourceDir=..
 AppId={{8C2510DF-5D8C-46D3-8E26-E0D342A7A667}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -11,7 +12,7 @@ DefaultDirName={code:GetDefaultOBSDir}
 DisableProgramGroupPage=yes
 DisableReadyMemo=no
 DirExistsWarning=no
-OutputDir=..\release
+OutputDir=release
 OutputBaseFilename=OBS-67-Counter-Setup-v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
