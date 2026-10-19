@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -19,13 +20,13 @@ static std::vector<SixtySevenFilter *> g_filter_registry;
 static void defaults(obs_data_t *s)
 {
     obs_data_set_default_bool(s, "enabled", true);
-    obs_data_set_default_bool(s, "debug", true);
-    obs_data_set_default_bool(s, "show_tracking_markers", true);
-    obs_data_set_default_double(s, "dead_zone", 0.08);
+    obs_data_set_default_bool(s, "debug", false);
+    obs_data_set_default_bool(s, "show_tracking_markers", false);
+    obs_data_set_default_double(s, "dead_zone", 0.06);
     obs_data_set_default_double(s, "min_blob", 0.0035);
     obs_data_set_default_double(s, "pose_confidence", 0.20);
-    obs_data_set_default_int(s, "stable_frames", 4);
-    obs_data_set_default_int(s, "cooldown_ms", 250);
+    obs_data_set_default_int(s, "stable_frames", 2);
+    obs_data_set_default_int(s, "cooldown_ms", 100);
     obs_data_set_default_int(s, "count", 0);
     obs_data_set_default_string(s, "text_source", "");
     obs_data_set_default_string(s, "text_prefix", "");
