@@ -73,3 +73,7 @@ struct SixtySevenFilter {
 
     std::mutex mutex;
 };
+
+// Trigger the temporary challenge on every live 67 Counter filter instance.
+// Used by the global frontend hotkey so obs-websocket/Streamer.bot can invoke it.
+void sixty_seven_start_all_temporary_counters();
