@@ -1,7 +1,7 @@
-name: Windows test build
+name: Windows release build
 on:
   push:
-    branches: [ main, v1-hand-detector, v2-pose-landmarks ]
+    branches: [ main, v1-hand-detector, v2-pose-landmarks, v2-stable-release ]
   workflow_dispatch:
 
 jobs:
@@ -9,6 +9,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+
       - name: Checkout OBS 32.2.2
         uses: actions/checkout@v4
         with:
@@ -16,12 +17,15 @@ jobs:
           ref: 32.2.2
           path: obs-studio
           submodules: recursive
+
       - name: Configure OBS
         shell: pwsh
         run: cmake -S obs-studio -B obs-build -G "Visual Studio 17 2022" -A x64 -DENABLE_UI=OFF -DENABLE_PLUGINS=OFF
+
       - name: Build libobs
         shell: pwsh
         run: cmake --build obs-build --config Release --target libobs
+
       - name: Download ONNX Runtime
         shell: pwsh
         run: |
@@ -33,6 +37,7 @@ jobs:
           if (-not (Test-Path "$ortRoot/include/onnxruntime_cxx_api.h")) { throw "ONNX Runtime headers were not found" }
           if (-not (Test-Path "$ortRoot/lib/onnxruntime.dll")) { throw "ONNX Runtime DLL was not found" }
           "ORT_ROOT=$ortRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Download MoveNet SinglePose Lightning
         shell: pwsh
         run: |
@@ -41,6 +46,7 @@ jobs:
           curl.exe -L --fail --retry 3 --retry-delay 2 -o third_party/movenet_singlepose_lightning.onnx $url
           $model = Get-Item third_party/movenet_singlepose_lightning.onnx
           if ($model.Length -lt 5000000) { throw "MoveNet model download looks incomplete: $($model.Length) bytes" }
+
       - name: Configure plugin
         shell: pwsh
         run: |
@@ -58,10 +64,12 @@ jobs:
             "-DCMAKE_PREFIX_PATH=$deps;$root/obs-build;$root/obs-build/deps;$root/obs-build/libobs" `
             "-DCMAKE_MODULE_PATH=$root/obs-studio/cmake/finders" `
             "-DONNXRUNTIME_ROOT=$ort"
+
       - name: Build plugin
         shell: pwsh
         run: cmake --build build --config Release
-      - name: Stage
+
+      - name: Stage plugin
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/obs-plugins/64bit | Out-Null
@@ -72,7 +80,43 @@ jobs:
             Copy-Item "$env:ORT_ROOT/lib/onnxruntime_providers_shared.dll" dist/data/obs-plugins/obs-67-counter/
           }
           Copy-Item third_party/movenet_singlepose_lightning.onnx dist/data/obs-plugins/obs-67-counter/
+          Copy-Item installer/README-FIRST.txt dist/
+          Copy-Item installer/THIRD-PARTY-NOTICES.txt dist/
+
+      - name: Build portable ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path dist/* -DestinationPath release/OBS-67-Counter-Portable-v2.0.0.zip -CompressionLevel Optimal
+
+      - name: Find or install Inno Setup
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup compiler was not found" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build one-click installer
+        shell: pwsh
+        run: |
+          & "$env:ISCC" "installer/obs-67-counter.iss"
+          if (-not (Test-Path "release/OBS-67-Counter-Setup-v2.0.0.exe")) {
+            throw "Installer was not produced"
+          }
+
+      - name: Copy release guide
+        shell: pwsh
+        run: Copy-Item installer/README-FIRST.txt release/README-FIRST.txt
+
       - uses: actions/upload-artifact@v4
         with:
-          name: obs-67-counter-windows-x64-pose-test
-          path: dist/
+          name: OBS-67-Counter-v2.0.0-Full
+          path: release/
