@@ -1,0 +1,15 @@
+OBS 67 Counter - Third-Party Notices
+====================================
+
+This package includes third-party runtime/model components used for pose inference:
+
+1. ONNX Runtime
+   Project: Microsoft ONNX Runtime
+   Source: https://github.com/microsoft/onnxruntime
+   Runtime version packaged by the build: 1.23.2
+
+2. MoveNet SinglePose Lightning ONNX model
+   Packaged from the Xenova MoveNet SinglePose Lightning ONNX distribution:
+   https://huggingface.co/Xenova/movenet-singlepose-lightning
+
+OBS 67 Counter itself is distributed under the license in this repository's LICENSE file.
