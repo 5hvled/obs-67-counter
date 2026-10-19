@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(obs-67-counter VERSION 0.1.0 LANGUAGES C CXX)
+project(obs-67-counter VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
