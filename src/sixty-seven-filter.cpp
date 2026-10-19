@@ -13,6 +13,9 @@
 static const char *filter_name(void *) { return "67 Counter"; }
 static const char *raw_filter_name(void *) { return "67 Counter (Raw Camera)"; }
 
+static std::mutex g_filter_registry_mutex;
+static std::vector<SixtySevenFilter *> g_filter_registry;
+
 static void defaults(obs_data_t *s)
 {
     obs_data_set_default_bool(s, "enabled", true);
