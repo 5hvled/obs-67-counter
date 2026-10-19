@@ -278,9 +278,16 @@ static void *create(obs_data_t *s, obs_source_t *source)
         source, "67Counter.PlusOne", "67 Counter: +1", hotkey_plus, f);
     f->hotkey_minus = obs_hotkey_register_source(
         source, "67Counter.MinusOne", "67 Counter: -1", hotkey_minus, f);
-    f->hotkey_start_challenge = obs_hotkey_register_source(
-        source, "67Counter.StartTemporary",
-        "67 Counter: Start temporary counter", hotkey_start_challenge, f);
+    // The temporary challenge is exposed as one global frontend hotkey
+    // from plugin-main.cpp so obs-websocket can enumerate and trigger it.
+    // Source/filter hotkeys can be private in OBS and are not reliable for
+    // remote invocation.
+    f->hotkey_start_challenge = OBS_INVALID_HOTKEY_ID;
+
+    {
+        std::lock_guard<std::mutex> lock(g_filter_registry_mutex);
+        g_filter_registry.push_back(f);
+    }
 
     sync_challenge_text_source(f, 0, false);
     return f;
@@ -316,6 +323,14 @@ static void destroy(void *data)
     if (!f)
         return;
 
+    {
+        std::lock_guard<std::mutex> lock(g_filter_registry_mutex);
+        g_filter_registry.erase(
+            std::remove(g_filter_registry.begin(),
+                        g_filter_registry.end(), f),
+            g_filter_registry.end());
+    }
+
     if (f->sample_render || f->stage[0] || f->stage[1] || f->debug_marker_texture) {
         obs_enter_graphics();
         destroy_graphics_resources(f);
@@ -347,6 +362,20 @@ static bool button_start_challenge(obs_properties_t *, obs_property_t *, void *d
 {
     start_challenge(static_cast<SixtySevenFilter *>(data));
     return true;
+}
+
+void sixty_seven_start_all_temporary_counters()
+{
+    std::vector<SixtySevenFilter *> filters;
+    {
+        std::lock_guard<std::mutex> lock(g_filter_registry_mutex);
+        filters = g_filter_registry;
+    }
+
+    for (auto *filter : filters) {
+        if (filter)
+            start_challenge(filter);
+    }
 }
 
 static bool enum_text_source(void *param, obs_source_t *source)
